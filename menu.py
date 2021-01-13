@@ -1,8 +1,15 @@
 import sys
-import subprocess
-import configparser
 import pythoncom
 import win32com.client
+
+''' py2exe를 사용할 경우 필요
+    if win32com.client.gencache.is_readonly == True:
+        # allow gencache to create the cached wrapper objects
+        win32com.client.gencache.is_readonly = False
+        # under p2exe the call in gencache to __init__() does not happen
+        # so we use Rebuild() to force the creation of the gen_py folder
+        win32com.client.gencache.Rebuild()
+'''
 
 
 def exit_program():
@@ -10,67 +17,57 @@ def exit_program():
     sys.exit(0)
 
 
-def regist_api():
-    '''
-        xing api를 레지스트리에 등록합니다.
-        저장된 위치는 컴퓨터\HKEY_CLASSES_ROOT\CLSID 입니다.
-        -s 옵션을 지우고 command 실행 시 결과를 알 수 있습니다.
-    '''
-    cmd = ['regsvr32', '-s', 'XA_Common.dll']
-    subprocess.run(cmd, shell=True, encoding='cp949')
-    cmd = ['regsvr32', '-s', 'XA_DataSet.dll']
-    subprocess.run(cmd, shell=True, encoding='cp949')
-    cmd = ['regsvr32', '-s', 'XA_Session.dll']
-    subprocess.run(cmd, shell=True, encoding='cp949')
-    print("레지스트리에 XA_Common.dll을 등록합니다.")
-    print("레지스트리에 XA_DataSet.dll을 등록합니다.")
-    print("레지스트리에 XA_Session.dll을 등록합니다.")
-    print()
-
-
-def unregist_api():
-    '''
-        레지스트리에 등록된 xing api를 제거합니다.
-        -s 옵션을 지우고 command 실행 시 결과를 알 수 있습니다.
-    '''
-    cmd = ['regsvr32', '/u', '-s', 'XA_Common.dll']
-    subprocess.run(cmd, shell=True, encoding='cp949')
-    cmd = ['regsvr32', '/u', '-s', 'XA_DataSet.dll']
-    subprocess.run(cmd, shell=True, encoding='cp949')
-    cmd = ['regsvr32', '/u', '-s', 'XA_Session.dll']
-    subprocess.run(cmd, shell=True, encoding='cp949')
-    print("레지스트리에 등록된 XA_Common.dll을 제거합니다.")
-    print("레지스트리에 등록된 XA_DataSet.dll을 제거합니다.")
-    print("레지스트리에 등록된 XA_Session.dll을 제거합니다.")
-    print()
-
-    # config.ini의 값 False로 수정
-    config = configparser.ConfigParser(allow_no_value=True)
-    config.read('config.ini')
-    config['global']['xingapi'] = "False"
-    with open('config.ini', 'w') as configfile:
-        config.write(configfile)
-
-
-def loginTest():
+class Xing:
     class XASessionEventHandler:
         login_state = 0
 
         def OnLogin(self, code, msg):
             if code == "0000":
                 print("로그인 성공")
-                XASessionEventHandler.login_state = 1
+                Xing.XASessionEventHandler.login_state = 1
             else:
-                print("로그인 실패")
+                print("로그인 실패: ", code)
+                exit_program()
 
-    instXASession = win32com.client.DispatchWithEvents("XA_Session.XASession", XASessionEventHandler)
+    class XAQueryEventHandlerT8430:
+        query_state = 0
 
-    id = "id"
-    passwd = "pwd"
-    cert_passwd = "crtpwd!"
+        def OnReceiveData(self, code):
+            Xing.XAQueryEventHandlerT8430.query_state = 1
 
-    instXASession.ConnectServer("hts.ebestsec.co.kr", 20001)
-    instXASession.Login(id, passwd, cert_passwd, 0, 0)
+    def __init__(self, id, password, cert_password):
+        self.__id = id
+        self.__password = password
+        self.__cert_password = cert_password
+        self.res_dir = "./Res"
 
-    while XASessionEventHandler.login_state == 0:
-        pythoncom.PumpWaitingMessages()
+        instXASession = win32com.client.DispatchWithEvents("XA_Session.XASession", Xing.XASessionEventHandler)
+        instXASession.ConnectServer("hts.ebestsec.co.kr", 20001)
+        instXASession.Login(self.__id, self.__password, self.__cert_password, 0, 0)
+
+        while Xing.XASessionEventHandler.login_state == 0:
+            pythoncom.PumpWaitingMessages()
+
+    def set_res(self, res_dir):
+        self.res_dir = res_dir
+
+    def get_stock_list(self):
+        # ----------------------------------------------------------------------------
+        # T8430
+        # ----------------------------------------------------------------------------
+        instXAQueryT8430 = win32com.client.DispatchWithEvents("XA_DataSet.XAQuery", Xing.XAQueryEventHandlerT8430)
+        instXAQueryT8430.ResFileName = self.res_dir + "/t8430.res"
+
+        instXAQueryT8430.SetFieldData("t8430InBlock", "gubun", 0, 0)
+        instXAQueryT8430.Request(0)
+
+        while Xing.XAQueryEventHandlerT8430.query_state == 0:
+            pythoncom.PumpWaitingMessages()
+
+        count = instXAQueryT8430.GetBlockCount("t8430OutBlock")
+        for i in range(count):
+            hname = instXAQueryT8430.GetFieldData("t8430OutBlock", "hname", i)
+            shcode = instXAQueryT8430.GetFieldData("t8430OutBlock", "shcode", i)
+            expcode = instXAQueryT8430.GetFieldData("t8430OutBlock", "expcode", i)
+            etfgubun = instXAQueryT8430.GetFieldData("t8430OutBlock", "etfgubun", i)
+            print(i, hname, shcode, expcode, etfgubun)
